@@ -1,0 +1,11 @@
+pycocotools
+tqdm
+cython
+scipy
+matplotlib
+pandas
+seaborn
+opencv-python
+einops
+ninja
+wandb
