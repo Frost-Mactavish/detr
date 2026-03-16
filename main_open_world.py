@@ -13,14 +13,11 @@ import json
 import random
 import time
 from pathlib import Path
-import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-import datasets
 import utils.misc as utils
 import datasets.samplers as samplers
-from datasets import build_dataset, get_coco_api_from_dataset
 from datasets.coco import make_coco_transforms
 from datasets.torchvision_datasets.open_world import OWDetection
 from engine import evaluate, train_one_epoch, viz
@@ -29,12 +26,12 @@ from models import build_model
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
-    parser.add_argument('--lr', default=2e-4, type=float)
+    parser.add_argument('--lr', default=4e-4, type=float)
     parser.add_argument('--lr_backbone_names', default=["backbone.0"], type=str, nargs='+')
-    parser.add_argument('--lr_backbone', default=2e-5, type=float)
+    parser.add_argument('--lr_backbone', default=4e-5, type=float)
     parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
-    parser.add_argument('--batch_size', default=2, type=int)
+    parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=51, type=int)
     parser.add_argument('--lr_drop', default=40, type=int)
@@ -108,7 +105,7 @@ def get_args_parser():
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--viz', action='store_true')
     parser.add_argument('--eval_every', default=1, type=int)
-    parser.add_argument('--num_workers', default=2, type=int)
+    parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
 
     ## OWOD
@@ -133,7 +130,6 @@ def get_args_parser():
 
 def main(args):
     utils.init_distributed_mode(args)
-    print("git:\n  {}\n".format(utils.get_sha()))
 
     if args.frozen_weights is not None:
         assert args.masks, "Frozen training is meant for segmentation only"
@@ -141,7 +137,6 @@ def main(args):
 
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -151,11 +146,20 @@ def main(args):
     model.to(device)
 
     model_without_ddp = model
-    print(model_without_ddp)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('number of params:', n_parameters)
 
-    dataset_train, dataset_val = get_datasets(args)
+    dataset_train = OWDetection(args, args.data_root, image_sets=[args.train_set], transforms=make_coco_transforms(args.train_set))
+    dataset_val = OWDetection(args, args.data_root, image_sets=[args.test_set], transforms=make_coco_transforms(args.test_set))
+
+    num_classes = len(dataset_train.CLASS_NAMES) - 1
+    num_prev_classes = args.PREV_INTRODUCED_CLS
+    num_known_classes = args.CUR_INTRODUCED_CLS
+    num_current_classes = num_known_classes - num_prev_classes
+
+    print(f"All Classes({num_classes}): {', '.join(dataset_train.CLASS_NAMES[:-1])}")
+    print(f"Previous Classes: {num_prev_classes}")
+    print(f"Current Classes: {num_current_classes}")
+    print(f"Unknown Classes: {num_classes-num_known_classes}")
     
     if args.distributed:
         if args.cache_mode:
@@ -213,15 +217,6 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
-    if args.dataset == "coco_panoptic":
-        # We also evaluate AP during panoptic training, on original coco DS
-        coco_val = datasets.coco.build("val", args)
-        base_ds = get_coco_api_from_dataset(coco_val)
-    elif args.dataset == "coco":
-        base_ds = get_coco_api_from_dataset(dataset_val)
-    else:
-        base_ds = dataset_val
-
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
@@ -268,16 +263,16 @@ def main(args):
         # check the resumed model
         if (not args.eval and not args.viz and args.dataset in ['coco', 'voc']):
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
+                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args
             )
         if args.eval:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args)
+            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
             if args.output_dir:
                 utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
             return
 
     if args.viz:
-        viz(model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir)
+        viz(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir)
         return
 
     print("Start training")
@@ -304,7 +299,7 @@ def main(args):
 
         if args.dataset in ['owod'] and epoch % args.eval_every == 0 and epoch > 0:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
+                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args
             )
         else:
             test_stats = {}
@@ -334,32 +329,10 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-def get_datasets(args):
-    print(args.dataset)
-    if args.dataset == 'owod':
-        train_set = args.train_set
-        test_set = args.test_set
-        dataset_train = OWDetection(args, args.owod_path, ["2007"], image_sets=[args.train_set], transforms=make_coco_transforms(args.train_set))
-        dataset_val = OWDetection(args, args.owod_path, ["2007"], image_sets=[args.test_set], transforms=make_coco_transforms(args.test_set))
-    else:
-        raise ValueError("Wrong dataset name")
-
-    print(args.dataset)
-    print(args.train_set)
-    print(args.test_set)
-    print(dataset_train)
-    print(dataset_val)
-
-    return dataset_train, dataset_val
-
-
-def set_dataset_path(args):
-    args.owod_path = os.path.join(args.data_root, 'VOC2007')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
-    set_dataset_path(args)
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

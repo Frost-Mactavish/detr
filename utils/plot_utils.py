@@ -6,6 +6,8 @@ import numpy as np
 from pathlib import Path, PurePath
 from utils.box_ops import box_cxcywh_to_xyxy
 import itertools
+import cv2
+import random
 
  
 VOC_CLASS_NAMES_COCOFIED = [
@@ -48,7 +50,6 @@ T4_CLASS_NAMES = [
 UNK_CLASS = ["unknown"]
 
 VOC_COCO_CLASS_NAMES = tuple(itertools.chain(VOC_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
-print(VOC_COCO_CLASS_NAMES)
 
 CLASSES = list(VOC_COCO_CLASS_NAMES)
 # colors for visualization

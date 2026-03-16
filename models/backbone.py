@@ -108,9 +108,9 @@ class Backbone(BackboneBase):
                 pretrained=is_main_process(), norm_layer=norm_layer)
         else:
             print("DINO resnet50")
-            backbone = resnet50(pretrained=False, replace_stride_with_dilation=[False, False, dilation], norm_layer=norm_layer)
+            backbone = resnet50(weights=None, replace_stride_with_dilation=[False, False, dilation], norm_layer=norm_layer)
             if is_main_process():
-                state_dict = torch.load("/proj/cvl/users/x_fahkh/akshita/Deformable-DETR/models/dino_resnet50_pretrain/dino_resnet50_pretrain.pth")
+                state_dict = torch.load("models/cache/dino_resnet50_pretrain.pth")
                 backbone.load_state_dict(state_dict, strict=False)
         assert name not in ('resnet18', 'resnet34'), "number of channels are hard coded"
         super().__init__(backbone, train_backbone, return_interm_layers)
