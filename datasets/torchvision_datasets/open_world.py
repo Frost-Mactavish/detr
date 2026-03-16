@@ -30,32 +30,10 @@ UNK_CLASS = ["unknown"]
 VOC_COCO_CLASS_NAMES={}
 
 
-T1_CLASS_NAMES = [
-    "aeroplane","bicycle","bird","boat","bus","car",
-    "cat","cow","dog","horse","motorbike","sheep","train",
-    "elephant","bear","zebra","giraffe","truck","person"
-]
-
-T2_CLASS_NAMES = [
-    "traffic light","fire hydrant","stop sign",
-    "parking meter","bench","chair","diningtable",
-    "pottedplant","backpack","umbrella","handbag",
-    "tie","suitcase","microwave","oven","toaster","sink",
-    "refrigerator","bed","toilet","sofa"
-]
-
-T3_CLASS_NAMES = [
-    "frisbee","skis","snowboard","sports ball",
-    "kite","baseball bat","baseball glove","skateboard",
-    "surfboard","tennis racket","banana","apple","sandwich",
-    "orange","broccoli","carrot","hot dog","pizza","donut","cake"
-]
-
-T4_CLASS_NAMES = [
-    "laptop","mouse","remote","keyboard","cell phone","book",
-    "clock","vase","scissors","teddy bear","hair drier","toothbrush",
-    "wine glass","cup","fork","knife","spoon","bowl","tvmonitor","bottle"
-]
+T1_CLASS_NAMES = ["airplane", "ship", "vehicle", "harbor", "storage-tank", "tennis-court"]
+T2_CLASS_NAMES = ["bridge", "baseball-diamond", "basketball-court", "ground-track-field", "swimming-pool", "windmill"]
+T3_CLASS_NAMES = ["overpass", "helicopter", "expressway-service-area", "soccer-ball-field", "roundabout", "airport"]
+T4_CLASS_NAMES = ["chimney", "expressway-toll-station", "stadium", "dam", "golffield", "trainstation"]
 
 VOC_COCO_CLASS_NAMES["OWDETR"] = tuple(itertools.chain(T1_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
 
@@ -100,8 +78,6 @@ VOC_COCO_CLASS_NAMES["TOWOD"] = tuple(itertools.chain(VOC_CLASS_NAMES, T2_CLASS_
 VOC_COCO_CLASS_NAMES["VOC2007"] = tuple(itertools.chain(VOC_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
 
 
-print(VOC_COCO_CLASS_NAMES)
-
 class OWDetection(VisionDataset):
     """`OWOD in Pascal VOC format <http://host.robots.ox.ac.uk/pascal/VOC/>`_ Detection Dataset.
 
@@ -136,7 +112,6 @@ class OWDetection(VisionDataset):
         self.image_set = []
         self.transforms=transforms
         self.CLASS_NAMES = VOC_COCO_CLASS_NAMES[dataset]
-        self.MAX_NUM_OBJECTS = 64
         self.args = args
         self.dataset=dataset
 
@@ -145,39 +120,10 @@ class OWDetection(VisionDataset):
         image_dir = os.path.join(self.root, 'JPEGImages')
 
         file_names = self.extract_fns(image_set, self.root)
-        if image_set == 'voc2007_trainval':
-            print('PASCAL-VOC2007 dataset used; clearing images with missing object classes')
-            prev_intro_cls = self.args.PREV_INTRODUCED_CLS
-            curr_intro_cls = self.args.CUR_INTRODUCED_CLS
-            valid_classes = range(prev_intro_cls, prev_intro_cls + curr_intro_cls)
-            current_file_names=[]
-            for file in file_names:
-                annot = os.path.join(annotation_dir, file + ".xml")
-                tree = ET.parse(annot)
-                target = self.parse_voc_xml(tree.getroot())
-                instances = []
-                for obj in target['annotation']['object']:
-                    cls = obj["name"]
-                    if cls in VOC_CLASS_NAMES_COCOFIED:
-                        cls = BASE_VOC_CLASS_NAMES[VOC_CLASS_NAMES_COCOFIED.index(cls)]
-                    
-                    if self.CLASS_NAMES.index(cls) in valid_classes:
-                        instance = dict(
-                            category_id=self.CLASS_NAMES.index(cls),
-                        )
-                        instances.append(instance)
-                if len(instances)>0:
-                    current_file_names.append(file)
-
-            self.image_set.extend(current_file_names)
-            self.images.extend([os.path.join(image_dir, x + ".jpg") for x in current_file_names])
-            self.annotations.extend([os.path.join(annotation_dir, x + ".xml") for x in current_file_names])
-            self.imgids.extend(self.convert_image_id(x, to_integer=True) for x in current_file_names)
-        else: 
-            self.image_set.extend(file_names)
-            self.images.extend([os.path.join(image_dir, x + ".jpg") for x in file_names])
-            self.annotations.extend([os.path.join(annotation_dir, x + ".xml") for x in file_names])
-            self.imgids.extend(self.convert_image_id(x, to_integer=True) for x in file_names)
+        self.image_set.extend(file_names)
+        self.images.extend([self.resolve_image_path(image_dir, x) for x in file_names])
+        self.annotations.extend([os.path.join(annotation_dir, x + ".xml") for x in file_names])
+        self.imgids.extend(list(range(len(file_names))))
             
         self.imgid2annotations.update(dict(zip(self.imgids, self.annotations)))
 
@@ -188,6 +134,17 @@ class OWDetection(VisionDataset):
             self.image_set, self.images, self.annotations, self.imgids = map(flt, [self.image_set, self.images,
                                                                                    self.annotations, self.imgids])
         assert (len(self.images) == len(self.annotations) == len(self.imgids))
+
+    @staticmethod
+    def resolve_image_path(image_dir, stem):
+        candidates = [
+            os.path.join(image_dir, stem + ".jpg"),
+            os.path.join(image_dir, stem + ".png"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        raise FileNotFoundError(f"Image file not found for '{stem}' in {image_dir}. Tried: {candidates}")
 
     @staticmethod
     def convert_image_id(img_id, to_integer=False, to_string=False, prefix='2021'):
@@ -210,8 +167,8 @@ class OWDetection(VisionDataset):
         for obj in target['annotation']['object']:
             cls = obj["name"]
 
-            if cls in VOC_CLASS_NAMES_COCOFIED:
-                cls = BASE_VOC_CLASS_NAMES[VOC_CLASS_NAMES_COCOFIED.index(cls)]
+            # if cls in VOC_CLASS_NAMES_COCOFIED:
+            #     cls = BASE_VOC_CLASS_NAMES[VOC_CLASS_NAMES_COCOFIED.index(cls)]
             bbox = obj["bndbox"]
             bbox = [float(bbox[x]) for x in ["xmin", "ymin", "xmax", "ymax"]]
             bbox[0] -= 1.0

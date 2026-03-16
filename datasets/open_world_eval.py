@@ -53,7 +53,11 @@ class OWEvaluator:
     def update(self, predictions):
         for img_id, pred in predictions.items():
             pred_boxes, pred_labels, pred_scores = [pred[k].cpu() for k in ['boxes', 'labels', 'scores']]
-            image_id = self.voc_gt.convert_image_id(int(img_id), to_string=True)
+            image_index = int(img_id)
+            if hasattr(self.voc_gt, 'image_set') and 0 <= image_index < len(self.voc_gt.image_set):
+                image_id = self.voc_gt.image_set[image_index]
+            else:
+                image_id = str(image_index)
             self.img_ids.append(img_id)
             classes = pred_labels.tolist()
             for (xmin, ymin, xmax, ymax), cls, score in zip(pred_boxes.tolist(), classes , pred_scores.tolist()):
@@ -274,7 +278,7 @@ def parse_rec(filename, known_classes):
         if cls_name not in known_classes:
             cls_name = 'unknown'
         obj_struct['name'] = cls_name
-        obj_struct['difficult'] = int(obj.find('difficult').text)
+        obj_struct['difficult'] = 0
         bbox = obj.find('bndbox')
         obj_struct['bbox'] = [int(bbox.find('xmin').text),
                               int(bbox.find('ymin').text),

@@ -37,11 +37,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 10
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
 
-    for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+    for _ in metric_logger.log_every(range(len(data_loader)), 200, header):
         outputs = model(samples)
         loss_dict = criterion(outputs, targets) 
         weight_dict = deepcopy(criterion.weight_dict)
@@ -113,7 +112,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             output_dir=os.path.join(output_dir, "panoptic_eval"),
         )
  
-    for samples, targets in metric_logger.log_every(data_loader, 10, header):
+    for samples, targets in metric_logger.log_every(data_loader, 200, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         outputs = model(samples)

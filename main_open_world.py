@@ -20,10 +20,8 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-import datasets
 import utils.misc as utils
 import datasets.samplers as samplers
-from datasets import build_dataset, get_coco_api_from_dataset
 from datasets.coco import make_coco_transforms
 from datasets.torchvision_datasets.open_world import OWDetection
 from engine import evaluate, train_one_epoch, get_exemplar_replay
@@ -78,7 +76,7 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
-    parser.add_argument('--num_queries', default=100, type=int,
+    parser.add_argument('--num_queries', default=900, type=int,
                         help="Number of query slots")
     parser.add_argument('--dec_n_points', default=4, type=int)
     parser.add_argument('--enc_n_points', default=4, type=int)
@@ -160,17 +158,9 @@ def get_args_parser():
     return parser
 
 def main(args):
-    if len(args.wandb_project)>0:
-        if len(args.wandb_name)>0:
-            wandb.init(project=args.wandb_project, entity="marvl", group=args.wandb_name)
-        else:
-            wandb.init(project=args.wandb_project, entity="marvl")
-        wandb.config = args
-    #else:
-    #    wandb=None
+    wandb = None
 
     utils.init_distributed_mode(args)
-    print("git:\n  {}\n".format(utils.get_sha()))
 
     if args.frozen_weights is not None:
         assert args.masks, "Frozen training is meant for segmentation only"
@@ -178,7 +168,6 @@ def main(args):
 
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -188,11 +177,10 @@ def main(args):
     model.to(device)
 
     model_without_ddp = model
-    print(model_without_ddp)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('number of params:', n_parameters)
 
-    dataset_train, dataset_val = get_datasets(args)
+    dataset_train = OWDetection(args, args.data_root, image_set=args.train_set, transforms=make_coco_transforms(args.train_set), dataset = args.dataset)
+    dataset_val = OWDetection(args, args.data_root, image_set=args.test_set, dataset = args.dataset, transforms=make_coco_transforms(args.test_set))
     
     if args.distributed:
         if args.cache_mode:
@@ -250,15 +238,6 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
-    if args.dataset == "coco_panoptic":
-        # We also evaluate AP during panoptic training, on original coco DS
-        coco_val = datasets.coco.build("val", args)
-        base_ds = get_coco_api_from_dataset(coco_val)
-    elif args.dataset == "coco":
-        base_ds = get_coco_api_from_dataset(dataset_val)
-    else:
-        base_ds = dataset_val
-
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
@@ -273,7 +252,7 @@ def main(args):
         print(msg)
         args.start_epoch = checkpoint['epoch'] + 1
         if args.eval:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args)
+            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
             return
         
         
@@ -309,10 +288,10 @@ def main(args):
         # check the resumed model
         if (not args.eval and not args.viz and args.dataset in ['coco', 'voc']):
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args
+                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args
             )
         if args.eval:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args)
+            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
             if args.output_dir:
                 utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
             return
@@ -341,7 +320,7 @@ def main(args):
             # extra checkpoint before LR drop and every 5 epochs
             if (epoch + 1) % args.lr_drop == 0 or (epoch % args.eval_every == 0 or epoch == 0 or epoch == 1 or (args.epochs-epoch)<1):
                 test_stats, coco_evaluator = evaluate(
-                    model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args)
+                    model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
                 checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
                 if wandb is not None:
                     test_stats["metrics"]['epoch']=epoch
@@ -390,21 +369,6 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
     return
-
-def get_datasets(args):
-    print(args.dataset)
-
-    train_set = args.train_set
-    test_set = args.test_set
-    dataset_train = OWDetection(args, args.data_root, image_set=args.train_set, transforms=make_coco_transforms(args.train_set), dataset = args.dataset)
-    dataset_val = OWDetection(args, args.data_root, image_set=args.test_set, dataset = args.dataset, transforms=make_coco_transforms(args.test_set))
-
-    print(args.train_set)
-    print(args.test_set)
-    print(dataset_train)
-    print(dataset_val)
-
-    return dataset_train, dataset_val
 
 
 def create_ft_dataset(args, image_sorted_scores):
