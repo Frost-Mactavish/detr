@@ -13,14 +13,14 @@ from .torchvision_datasets import CocoDetection
 from .coco import build as build_coco
 
 
-def get_coco_api_from_dataset(dataset):
-    for _ in range(10):
-        # if isinstance(dataset, torchvision.datasets.CocoDetection):
-        #     break
-        if isinstance(dataset, torch.utils.data.Subset):
-            dataset = dataset.dataset
-    if isinstance(dataset, CocoDetection):
-        return dataset.coco
+# def get_coco_api_from_dataset(dataset):
+#     for _ in range(10):
+#         # if isinstance(dataset, torchvision.datasets.CocoDetection):
+#         #     break
+#         if isinstance(dataset, torch.utils.data.Subset):
+#             dataset = dataset.dataset
+#     if isinstance(dataset, CocoDetection):
+#         return dataset.coco
 
 
 def build_dataset(image_set, args):
