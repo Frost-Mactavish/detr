@@ -76,7 +76,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 ## ORIGINAL FUNCTION
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args, epoch):
     model.eval()
     criterion.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -97,7 +97,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     metric_logger.synchronize_between_processes()
     coco_evaluator.synchronize_between_processes()
     coco_evaluator.accumulate()
-    coco_evaluator.summarize()
+    coco_evaluator.summarize(epoch)
     
     stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     if 'bbox' in postprocessors.keys():

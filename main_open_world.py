@@ -263,10 +263,10 @@ def main(args):
         # check the resumed model
         if (not args.eval and not args.viz and args.dataset in ['coco', 'voc']):
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args
+                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args, epoch=args.start_epoch
             )
         if args.eval:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
+            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args, epoch=args.start_epoch)
             if args.output_dir:
                 utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
             return
@@ -299,7 +299,7 @@ def main(args):
 
         if args.dataset in ['owod'] and epoch % args.eval_every == 0 and epoch > 0:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args
+                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args, epoch
             )
         else:
             test_stats = {}

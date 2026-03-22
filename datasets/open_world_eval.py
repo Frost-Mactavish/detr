@@ -14,6 +14,7 @@ from collections import OrderedDict, defaultdict
 class OWEvaluator:
     def __init__(self, voc_gt, iou_types, args=None, use_07_metric=True, ovthresh=list(range(50, 100, 5))):
         assert tuple(iou_types) == ('bbox',)
+        self.args = args
         self.use_07_metric = use_07_metric
         self.ovthresh = ovthresh
         self.voc_gt = voc_gt
@@ -154,44 +155,58 @@ class OWEvaluator:
                 self.recs[ovthresh].append(0.)
                 self.precs[ovthresh].append(0.)
 
-    def summarize(self, fmt='{:.06f}'):
+    def summarize(self, epoch, fmt='{:.06f}',):
+        log_lines = []
+
+        def emit(msg):
+            print(msg)
+            log_lines.append(str(msg))
+
+        emit(f"Epoch: {epoch}")
+
         o50, _ = map(self.ovthresh.index, [50, 75])
         mAP = float(self.AP.mean())
         mAP50 = float(self.AP[:, o50].mean())
-        print('detection mAP50:', fmt.format(mAP50))
-        print('detection mAP:', fmt.format(mAP))
-        print('---AP50---')
+        emit(f"detection mAP50: {fmt.format(mAP50)}")
+        emit(f"detection mAP: {fmt.format(mAP)}")
+        emit('---AP50---')
         wi = self.compute_WI_at_many_recall_level(self.all_recs, self.tp_plus_fp_cs, self.fp_os)
-        print('Wilderness Impact: ' + str(wi))
+        emit('Wilderness Impact: ' + str(wi))
         avg_precision_unk = self.compute_avg_precision_at_many_recall_level_for_unk(self.all_precs, self.all_recs)
-        print('avg_precision: ' + str(avg_precision_unk))
+        emit('avg_precision: ' + str(avg_precision_unk))
         total_num_unk_det_as_known = {iou: np.sum(x) for iou, x in self.unk_det_as_knowns.items()} #torch.sum(self.unk_det_as_knowns[:, o50]) #[np.sum(x) for x in self.unk_det_as_knowns[:, o50]]
         total_num_unk = self.num_unks[50][0]
-        print('Absolute OSE (total_num_unk_det_as_known): ' + str(total_num_unk_det_as_known))
-        print('total_num_unk ' + str(total_num_unk))
-        print("AP50: " + str(['%.1f' % x for x in self.AP[:, o50]]))
-        print("Precisions50: " + str(['%.1f' % x for x in self.precs[50]]))
-        print("Recall50: " + str(['%.1f' % x for x in self.recs[50]]))
+        emit('Absolute OSE (total_num_unk_det_as_known): ' + str(total_num_unk_det_as_known))
+        emit('total_num_unk ' + str(total_num_unk))
+        emit("AP50: " + str(['%.1f' % x for x in self.AP[:, o50]]))
+        emit("Precisions50: " + str(['%.1f' % x for x in self.precs[50]]))
+        emit("Recall50: " + str(['%.1f' % x for x in self.recs[50]]))
 
         if self.prev_intro_cls > 0:
-            print("Prev class AP50: " + str(self.AP[:, o50][:self.prev_intro_cls].mean()))
-            print("Prev class Precisions50: " + str(np.mean(self.precs[50][:self.prev_intro_cls])))
-            print("Prev class Recall50: " + str(np.mean(self.recs[50][:self.prev_intro_cls])))
+            emit("Prev class AP50: " + str(self.AP[:, o50][:self.prev_intro_cls].mean()))
+            emit("Prev class Precisions50: " + str(np.mean(self.precs[50][:self.prev_intro_cls])))
+            emit("Prev class Recall50: " + str(np.mean(self.recs[50][:self.prev_intro_cls])))
 
-        print("Current class AP50: " + str(self.AP[:, o50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls].mean()))
-        print("Current class Precisions50: " + str(np.mean(self.precs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Current class Recall50: " + str(np.mean(self.recs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
+        emit("Current class AP50: " + str(self.AP[:, o50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls].mean()))
+        emit("Current class Precisions50: " + str(np.mean(self.precs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
+        emit("Current class Recall50: " + str(np.mean(self.recs[50][self.prev_intro_cls:self.prev_intro_cls + self.curr_intro_cls])))
 
-        print("Known AP50: " + str(self.AP[:, o50][:self.prev_intro_cls + self.curr_intro_cls].mean()))
-        print("Known Precisions50: " + str(np.mean(self.precs[50][:self.prev_intro_cls + self.curr_intro_cls])))
-        print("Known Recall50: " + str(np.mean(self.recs[50][:self.prev_intro_cls + self.curr_intro_cls])))
+        emit("Known AP50: " + str(self.AP[:, o50][:self.prev_intro_cls + self.curr_intro_cls].mean()))
+        emit("Known Precisions50: " + str(np.mean(self.precs[50][:self.prev_intro_cls + self.curr_intro_cls])))
+        emit("Known Recall50: " + str(np.mean(self.recs[50][:self.prev_intro_cls + self.curr_intro_cls])))
 
-        print("Unknown AP50: " + str(self.AP[:, o50][-1]))
-        print("Unknown Precisions50: " + str(self.precs[50][-1]))
-        print("Unknown Recall50: " + str(self.recs[50][-1]))
+        emit("Unknown AP50: " + str(self.AP[:, o50][-1]))
+        emit("Unknown Precisions50: " + str(self.precs[50][-1]))
+        emit("Unknown Recall50: " + str(self.recs[50][-1]))
 
         for class_name, ap in zip(self.voc_gt.CLASS_NAMES, self.AP[:, o50].cpu().tolist()):
-            print(class_name, fmt.format(ap))
+            emit(f"{class_name} {fmt.format(ap)}")
+
+        if self.args is not None and hasattr(self.args, 'output_dir'):
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            stats_log_path = os.path.join(self.args.output_dir, 'stats.log')
+            with open(stats_log_path, 'a') as f:
+                f.write('\n'.join(log_lines) + '\n\n')
         self.coco_eval['bbox'].stats = torch.cat(
             [self.AP[:, o50].mean(dim=0, keepdim=True),
              self.AP.flatten().mean(dim=0, keepdim=True), self.AP.flatten()])
