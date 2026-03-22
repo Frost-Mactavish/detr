@@ -27,7 +27,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     header = 'Epoch: [{}]'.format(epoch)
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
-    for _ in metric_logger.log_every(range(len(data_loader)), 200, header):
+    for _ in metric_logger.log_every(range(len(data_loader)), 99999, header):
         outputs = model(samples)
         loss_dict = criterion(samples, outputs, targets, epoch) ## samples variable needed for feature selection
         weight_dict = deepcopy(criterion.weight_dict)
@@ -84,7 +84,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
     coco_evaluator = OWEvaluator(base_ds, iou_types, args=args)
 
-    for samples, targets in metric_logger.log_every(data_loader, 200, header):
+    for samples, targets in metric_logger.log_every(data_loader, 999999, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         outputs = model(samples)
@@ -94,9 +94,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
         coco_evaluator.update(res)
 
-    # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    # print("Averaged stats:", metric_logger)
     coco_evaluator.synchronize_between_processes()
     coco_evaluator.accumulate()
     coco_evaluator.summarize()

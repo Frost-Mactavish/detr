@@ -25,8 +25,6 @@ from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss) #, sigmoid_focal_loss_CA)
 from .deformable_transformer import build_deforamble_transformer
 import copy
-import heapq
-import operator
 import os
 from copy import deepcopy
 
@@ -112,6 +110,8 @@ class DeformableDETR(nn.Module):
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
             self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+            if self.novelty_cls:
+                self.nc_class_embed = _get_clones(self.nc_class_embed, num_pred)
             nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
             # hack implementation for iterative bounding box refinement
             self.transformer.decoder.bbox_embed = self.bbox_embed
@@ -281,6 +281,79 @@ class SetCriterion(nn.Module):
         self.top_unk = args.top_unk
         self.bbox_thresh = args.bbox_thresh
         self.num_seen_classes = args.PREV_INTRODUCED_CLS + args.CUR_INTRODUCED_CLS
+
+    def _append_unmatched_pseudo_targets(self, samples, box_outputs, indices, owod_targets, owod_indices, res_feat):
+        owod_device = box_outputs["pred_boxes"].device
+        batch_size, num_queries = box_outputs['pred_logits'].shape[:2]
+        unk_label = torch.as_tensor([self.num_classes - 1], device=owod_device)
+
+        for batch_index in range(batch_size):
+            matched_query_indices = indices[batch_index][0].to(device=owod_device, dtype=torch.long)
+            unmatched_mask = torch.ones(num_queries, dtype=torch.bool, device=owod_device)
+            unmatched_mask[matched_query_indices] = False
+            unmatched_indices = unmatched_mask.nonzero(as_tuple=False).flatten()
+
+            if unmatched_indices.numel() == 0:
+                continue
+
+            img_h, img_w = samples.tensors[batch_index].shape[-2:]
+            img_feat = F.interpolate(
+                res_feat[batch_index].unsqueeze(0).unsqueeze(0),
+                size=(img_h, img_w),
+                mode='bilinear',
+                align_corners=False,
+            ).squeeze(0).squeeze(0)
+            integral_img_feat = img_feat.cumsum(dim=0).cumsum(dim=1)
+            integral_img_feat = F.pad(integral_img_feat, (1, 0, 1, 0), mode='constant', value=0)
+
+            boxes = box_ops.box_cxcywh_to_xyxy(box_outputs['pred_boxes'][batch_index])
+            scale = torch.tensor([img_w, img_h, img_w, img_h], dtype=boxes.dtype, device=owod_device)
+            boxes = boxes * scale
+
+            x1 = boxes[:, 0].floor().long().clamp_(0, img_w)
+            y1 = boxes[:, 1].floor().long().clamp_(0, img_h)
+            x2 = boxes[:, 2].ceil().long().clamp_(0, img_w)
+            y2 = boxes[:, 3].ceil().long().clamp_(0, img_h)
+
+            valid_unmatched = unmatched_indices[(x2[unmatched_indices] > x1[unmatched_indices]) & (y2[unmatched_indices] > y1[unmatched_indices])]
+            if valid_unmatched.numel() == 0:
+                continue
+
+            means_bb = torch.full((num_queries,), -1e10, dtype=img_feat.dtype, device=owod_device)
+            valid_x1 = x1[valid_unmatched]
+            valid_y1 = y1[valid_unmatched]
+            valid_x2 = x2[valid_unmatched]
+            valid_y2 = y2[valid_unmatched]
+
+            region_sums = (
+                integral_img_feat[valid_y2, valid_x2]
+                - integral_img_feat[valid_y1, valid_x2]
+                - integral_img_feat[valid_y2, valid_x1]
+                + integral_img_feat[valid_y1, valid_x1]
+            )
+            region_areas = (valid_y2 - valid_y1) * (valid_x2 - valid_x1)
+            region_means = region_sums / region_areas.to(dtype=img_feat.dtype)
+            finite_region_mask = torch.isfinite(region_means)
+            means_bb[valid_unmatched[finite_region_mask]] = region_means[finite_region_mask]
+
+            valid_scores = means_bb[valid_unmatched]
+            finite_mask = torch.isfinite(valid_scores) & (valid_scores > -1e9)
+            candidate_indices = valid_unmatched[finite_mask]
+            if candidate_indices.numel() == 0:
+                continue
+
+            topk = min(self.top_unk, candidate_indices.numel())
+            _, relative_topk = torch.topk(means_bb[candidate_indices], topk)
+            topk_inds = candidate_indices[relative_topk].cpu()
+
+            owod_targets[batch_index]['labels'] = torch.cat(
+                (owod_targets[batch_index]['labels'], unk_label.repeat_interleave(topk))
+            )
+            unknown_target_indices = (owod_targets[batch_index]['labels'] == unk_label).nonzero(as_tuple=True)[0][-topk:].cpu()
+            owod_indices[batch_index] = (
+                torch.cat((owod_indices[batch_index][0], topk_inds)),
+                torch.cat((owod_indices[batch_index][1], unknown_target_indices))
+            )
 
 
     def loss_NC_labels(self, outputs, targets, indices, num_boxes, current_epoch, owod_targets, owod_indices, log=True):
@@ -456,10 +529,7 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        if self.nc_epoch > 0:
-            loss_epoch = 9
-        else:
-            loss_epoch = 0
+        loss_epoch = self.nc_epoch
 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
         indices = self.matcher(outputs_without_aux, targets)
@@ -468,49 +538,16 @@ class SetCriterion(nn.Module):
         owod_indices = deepcopy(indices)
 
 
-        owod_outputs = outputs_without_aux.copy()
-        owod_device = owod_outputs["pred_boxes"].device
-
         if self.unmatched_boxes and epoch >= loss_epoch:
-            ## get pseudo unmatched boxes from this section
             res_feat = torch.mean(outputs['resnet_1024_feat'], 1)
-            queries = torch.arange(outputs['pred_logits'].shape[1])
-            for i in range(len(indices)):
-                combined = torch.cat((queries, self._get_src_single_permutation_idx(indices[i], i)[-1])) ## need to fix the indexing
-                uniques, counts = combined.unique(return_counts=True)
-                unmatched_indices = uniques[counts == 1]
-                boxes = outputs_without_aux['pred_boxes'][i] #[unmatched_indices,:]
-                img = samples.tensors[i].cpu().permute(1,2,0).numpy()
-                h, w = img.shape[:-1]
-                img_w = torch.tensor(w, device=owod_device)
-                img_h = torch.tensor(h, device=owod_device)
-                unmatched_boxes = box_ops.box_cxcywh_to_xyxy(boxes)
-                unmatched_boxes = unmatched_boxes * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32).to(owod_device)
-                means_bb = torch.zeros(queries.shape[0]).to(unmatched_boxes)
-                bb = unmatched_boxes
-                for j, _ in enumerate(means_bb):
-                    if j in unmatched_indices:
-                        upsaple = nn.Upsample(size=(img_h,img_w), mode='bilinear')
-                        img_feat = upsaple(res_feat[i].unsqueeze(0).unsqueeze(0))
-                        img_feat = img_feat.squeeze(0).squeeze(0)
-                        xmin = bb[j,:][0].long()
-                        ymin = bb[j,:][1].long()
-                        xmax = bb[j,:][2].long()
-                        ymax = bb[j,:][3].long()
-                        means_bb[j] = torch.mean(img_feat[ymin:ymax,xmin:xmax])
-                        if torch.isnan(means_bb[j]):
-                            means_bb[j] = -10e10
-                    else:
-                         means_bb[j] = -10e10
-
-                _, topk_inds =  torch.topk(means_bb, self.top_unk)
-                topk_inds = torch.as_tensor(topk_inds)
-                    
-                topk_inds = topk_inds.cpu()
-
-                unk_label = torch.as_tensor([self.num_classes-1], device=owod_device)
-                owod_targets[i]['labels'] = torch.cat((owod_targets[i]['labels'], unk_label.repeat_interleave(self.top_unk)))
-                owod_indices[i] = (torch.cat((owod_indices[i][0], topk_inds)), torch.cat((owod_indices[i][1], (owod_targets[i]['labels'] == unk_label).nonzero(as_tuple=True)[0].cpu())))
+            self._append_unmatched_pseudo_targets(
+                samples,
+                outputs_without_aux,
+                indices,
+                owod_targets,
+                owod_indices,
+                res_feat,
+            )
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -533,49 +570,16 @@ class SetCriterion(nn.Module):
                 owod_targets = deepcopy(targets)
                 owod_indices = deepcopy(indices)
 
-                aux_owod_outputs = aux_outputs.copy()
-                owod_device = aux_owod_outputs["pred_boxes"].device
-
                 if self.unmatched_boxes and epoch >= loss_epoch:
-                    ## get pseudo unmatched boxes from this section
                     res_feat = torch.mean(outputs['resnet_1024_feat'], 1) #2 X 67 X 50
-                    queries = torch.arange(aux_owod_outputs['pred_logits'].shape[1])
-                    for i in range(len(indices)):
-                        combined = torch.cat((queries, self._get_src_single_permutation_idx(indices[i], i)[-1])) ## need to fix the indexing
-                        uniques, counts = combined.unique(return_counts=True)
-                        unmatched_indices = uniques[counts == 1]
-                        boxes = aux_owod_outputs['pred_boxes'][i] #[unmatched_indices,:]
-                        img = samples.tensors[i].cpu().permute(1,2,0).numpy()
-                        h, w = img.shape[:-1]
-                        img_w = torch.tensor(w, device=owod_device)
-                        img_h = torch.tensor(h, device=owod_device)
-                        unmatched_boxes = box_ops.box_cxcywh_to_xyxy(boxes)
-                        unmatched_boxes = unmatched_boxes * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32).to(owod_device)
-                        means_bb = torch.zeros(queries.shape[0]).to(unmatched_boxes) #torch.zeros(unmatched_boxes.shape[0])
-                        bb = unmatched_boxes
-                        ## [INFO]: iterating over the full list of boxes and then selecting the unmatched ones
-                        for j, _ in enumerate(means_bb):
-                            if j in unmatched_indices:
-                                upsaple = nn.Upsample(size=(img_h,img_w), mode='bilinear')
-                                img_feat = upsaple(res_feat[i].unsqueeze(0).unsqueeze(0))
-                                img_feat = img_feat.squeeze(0).squeeze(0)
-                                xmin = bb[j,:][0].long()
-                                ymin = bb[j,:][1].long()
-                                xmax = bb[j,:][2].long()
-                                ymax = bb[j,:][3].long()
-                                means_bb[j] = torch.mean(img_feat[ymin:ymax,xmin:xmax])
-                                if torch.isnan(means_bb[j]):
-                                    means_bb[j] = -10e10
-                            else:
-                                means_bb[j] = -10e10
-
-                        _, topk_inds =  torch.topk(means_bb, self.top_unk)
-                        topk_inds = torch.as_tensor(topk_inds)
-
-                        topk_inds = topk_inds.cpu()
-                        unk_label = torch.as_tensor([self.num_classes-1], device=owod_device)
-                        owod_targets[i]['labels'] = torch.cat((owod_targets[i]['labels'], unk_label.repeat_interleave(self.top_unk)))
-                        owod_indices[i] = (torch.cat((owod_indices[i][0], topk_inds)), torch.cat((owod_indices[i][1], (owod_targets[i]['labels'] == unk_label).nonzero(as_tuple=True)[0].cpu())))
+                    self._append_unmatched_pseudo_targets(
+                        samples,
+                        aux_outputs,
+                        indices,
+                        owod_targets,
+                        owod_indices,
+                        res_feat,
+                    )
                         
                 for loss in self.losses:
                     if loss == 'masks':
@@ -595,15 +599,30 @@ class SetCriterion(nn.Module):
             for bt in bin_targets:
                 bt['labels'] = torch.zeros_like(bt['labels'])
             indices = self.matcher(enc_outputs, bin_targets)
+            enc_owod_targets = deepcopy(bin_targets)
+            enc_owod_indices = deepcopy(indices)
             for loss in self.losses:
                 if loss == 'masks':
                     # Intermediate masks losses are too costly to compute, we ignore them.
+                    continue
+                if loss == 'NC_labels':
+                    # Encoder outputs only include class/box logits.
                     continue
                 kwargs = {}
                 if loss == 'labels':
                     # Logging is enabled only for the last layer
                     kwargs['log'] = False
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                l_dict = self.get_loss(
+                    loss,
+                    enc_outputs,
+                    bin_targets,
+                    indices,
+                    num_boxes,
+                    epoch,
+                    enc_owod_targets,
+                    enc_owod_indices,
+                    **kwargs,
+                )
                 l_dict = {k + f'_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
