@@ -265,8 +265,8 @@ def parse_rec(filename, known_classes):
     for obj in tree.findall('object'):
         obj_struct = {}
         cls_name = obj.find('name').text
-        if cls_name in VOC_CLASS_NAMES_COCOFIED:
-            cls_name = BASE_VOC_CLASS_NAMES[VOC_CLASS_NAMES_COCOFIED.index(cls_name)]
+        # if cls_name in VOC_CLASS_NAMES_COCOFIED:
+        #     cls_name = BASE_VOC_CLASS_NAMES[VOC_CLASS_NAMES_COCOFIED.index(cls_name)]
         if cls_name not in known_classes:
             cls_name = 'unknown'
         obj_struct['name'] = cls_name
