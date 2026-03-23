@@ -10,9 +10,11 @@ import torch
 import utils.misc as utils
 from datasets.open_world_eval import OWEvaluator
 from datasets.data_prefetcher import data_prefetcher
-from utils.plot_utils import plot_prediction
-import matplotlib.pyplot as plt
+from utils.plot_utils import draw_img, CLASSES
 from copy import deepcopy
+from PIL import Image
+import numpy as np
+from tqdm import tqdm
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -105,44 +107,53 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         
     return stats, coco_evaluator
 
+
 @torch.no_grad()
 def viz(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
-    import numpy as np
     os.makedirs(output_dir, exist_ok=True)
     model.eval()
     criterion.eval()
+
+    class_names = CLASSES
+    idx2name = {idx: name for idx, name in enumerate(class_names)}
  
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
- 
-    for samples, targets in data_loader:
+    cnt = 0
+    for samples, targets in tqdm(data_loader, desc="Viz"):
+        if cnt == 1000:
+            break
+        cnt += 1
+        
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        top_k = len(targets[0]['boxes'])
- 
+
         outputs = model(samples)
 
-        indices = outputs['pred_logits'][0].softmax(-1)[..., 1].sort(descending=True)[1][:top_k]
-        predictied_boxes = torch.stack([outputs['pred_boxes'][0][i] for i in indices]).unsqueeze(0)
-        logits = torch.stack([outputs['pred_logits'][0][i] for i in indices]).unsqueeze(0)
-        fig, ax = plt.subplots(1, 3, figsize=(10,3), dpi=200)
- 
-        img = samples.tensors[0].cpu().permute(1,2,0).numpy()
-        img = img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-        img = (img * 255)
-        img = img.astype('uint8')
-        h, w = img.shape[:-1]
- 
-        # Pred results
-        plot_prediction(samples.tensors[0:1], predictied_boxes, logits, ax[1], plot_prob=False)
-        ax[1].set_title('Prediction (Ours)')
- 
-        # GT Results
-        plot_prediction(samples.tensors[0:1], targets[0]['boxes'].unsqueeze(0), torch.zeros(1, targets[0]['boxes'].shape[0], 4).to(logits), ax[2], plot_prob=False)
-        ax[2].set_title('GT')
- 
-        for i in range(3):
-            ax[i].set_aspect('equal')
-            ax[i].set_axis_off()
- 
-        plt.savefig(os.path.join(output_dir, f'img_{int(targets[0]["image_id"][0])}.jpg'))
+        orig_target_sizes = torch.stack([t['orig_size'] for t in targets], dim=0)
+        results = postprocessors['bbox'](outputs, orig_target_sizes)
+
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+        for img_tensor, target, pred in zip(samples.tensors, targets, results):
+            top_k = int(target['boxes'].shape[0]) if 'boxes' in target else pred['scores'].shape[0]
+            keep_k = min(top_k, int(pred['scores'].shape[0]))
+            if keep_k == 0:
+                continue
+
+            top_indices = pred['scores'].sort(descending=True)[1][:keep_k]
+            boxes = pred['boxes'][top_indices].detach().cpu().numpy()
+            labels = pred['labels'][top_indices].detach().cpu().numpy().astype(np.int64)
+            scores = pred['scores'][top_indices].detach().cpu().numpy()
+
+            img = img_tensor.detach().cpu().permute(1, 2, 0).numpy()
+            img = (img * std + mean) * 255.0
+            img = np.clip(img, 0, 255).astype(np.uint8)
+            canvas = Image.fromarray(img)
+
+            draw_img(canvas, boxes, labels, scores, idx2name)
+
+            image_id = target['image_id']
+            if torch.is_tensor(image_id):
+                image_id = int(image_id.flatten()[0].item())
+            out_path = os.path.join(output_dir, f'img_{int(image_id)}.png')
+            canvas.save(out_path)

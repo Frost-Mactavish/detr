@@ -9,53 +9,90 @@ import itertools
 import cv2
 import random
 
- 
-VOC_CLASS_NAMES_COCOFIED = [
-    "airplane",  "dining table", "motorcycle",
-    "potted plant", "couch", "tv"
-]
+import torch
 
-BASE_VOC_CLASS_NAMES = [
-    "aeroplane", "diningtable", "motorbike",
-    "pottedplant",  "sofa", "tvmonitor"
-]
+import numpy as np
+import colorsys
+from PIL import ImageDraw, ImageFont
 
-VOC_CLASS_NAMES = [
-    "aeroplane","bicycle","bird","boat","bus","car",
-    "cat","cow","dog","horse","motorbike","sheep","train",
-    "elephant","bear","zebra","giraffe","truck","person"
-]
 
-T2_CLASS_NAMES = [
-    "traffic light","fire hydrant","stop sign",
-    "parking meter","bench","chair","diningtable",
-    "pottedplant","backpack","umbrella","handbag",
-    "tie","suitcase","microwave","oven","toaster","sink",
-    "refrigerator","bed","toilet","sofa"
-]
-
-T3_CLASS_NAMES = [
-    "frisbee","skis","snowboard","sports ball",
-    "kite","baseball bat","baseball glove","skateboard",
-    "surfboard","tennis racket","banana","apple","sandwich",
-    "orange","broccoli","carrot","hot dog","pizza","donut","cake"
-]
-
-T4_CLASS_NAMES = [
-    "laptop","mouse","remote","keyboard","cell phone","book",
-    "clock","vase","scissors","teddy bear","hair drier","toothbrush",
-    "wine glass","cup","fork","knife","spoon","bowl","tvmonitor","bottle"
-]
+T1_CLASS_NAMES = ["airplane", "ship", "vehicle", "harbor", "storage-tank", "tennis-court"]
+T2_CLASS_NAMES = ["bridge", "baseball-diamond", "basketball-court", "ground-track-field", "swimming-pool", "windmill"]
+T3_CLASS_NAMES = ["overpass", "helicopter", "expressway-service-area", "soccer-ball-field", "roundabout", "airport"]
+T4_CLASS_NAMES = ["chimney", "expressway-toll-station", "stadium", "dam", "golffield", "trainstation"]
 
 UNK_CLASS = ["unknown"]
 
-VOC_COCO_CLASS_NAMES = tuple(itertools.chain(VOC_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
-
-CLASSES = list(VOC_COCO_CLASS_NAMES)
+CLASSES = list(tuple(itertools.chain(T1_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS)))
 # colors for visualization
 COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
           [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
 
+
+def generate_distinct_colors(num_classes):
+    colors = []
+
+    for i in range(num_classes):
+        hue = i / num_classes
+        saturation = 0.8 + (i % 3) * 0.1
+        value = 0.8 + (i % 2) * 0.2
+
+        rgb = colorsys.hsv_to_rgb(hue, saturation, value)
+        colors.append(tuple(int(c * 255) for c in rgb))
+
+    return colors
+
+
+def draw_text(
+    draw,
+    box: list,
+    cls: int,
+    score: float,
+    category_index: dict,
+    color: str,
+    font_size: int = 24,
+):
+    font = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size
+    )
+
+    left, top, right, bottom = box
+    display_str = f"{category_index[cls]}: {int(100 * score)}%"
+    display_strs = [display_str]
+    display_str_heights = [
+        font.getbbox(ds)[3] - font.getbbox(ds)[1] for ds in display_strs
+    ]
+    display_str_height = (1 + 2 * 0.05) * max(display_str_heights)
+
+    if top > display_str_height:
+        text_top = top - display_str_height
+    else:
+        text_top = bottom
+
+    for ds in display_strs:
+        bbox = font.getbbox(ds)
+        text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        margin = np.ceil(0.05 * text_height)
+        draw.rectangle(
+            [
+                (left, text_top),
+                (left + text_width + 2 * margin, text_top + text_height + 2 * margin),
+            ],
+            fill=color,
+        )
+        draw.text((left + margin, text_top + margin), ds, fill="black", font=font)
+
+
+def draw_img(img_canvas, boxes, labels, scores, idx2name):
+    draw = ImageDraw.Draw(img_canvas)
+    colors = generate_distinct_colors(len(idx2name))
+    for box, label, score in zip(boxes, labels, scores):
+        x0, y0, x1, y1 = box
+        color = colors[label % len(colors)]
+        if label == 24:
+            color = "gray"
+        draw.rectangle([x0, y0, x1, y1], width=3, outline=color)
+        draw_text(draw, box, label, float(score), idx2name, color, font_size=20)
  
 
 def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt'):

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 alias exp="python -u main_open_world.py --dataset owod --num_queries 900 --eval_every 5 --data_root dataset/OWDETR \
-                                        --test_set test --num_classes 26 --unmatched_boxes --top_unk 5 --featdim 1024 \
+                                        --test_set test --num_classes 25 --unmatched_boxes --top_unk 5 --featdim 1024 \
                                         --NC_branch --nc_loss_coef 0.1 --nc_epoch 9 --with_box_refine --two_stage --backbone dino_resnet50"
 
 EXP_DIR=exps/OWDETR_t1
