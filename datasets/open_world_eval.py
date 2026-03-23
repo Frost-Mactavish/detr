@@ -103,7 +103,16 @@ class OWEvaluator:
             tp_plus_fps = []
             fps = []
             for cls_id, rec in enumerate(recall):
-                if cls_id in range(self.num_seen_classes) and len(rec) > 0:
+                # Skip unknown class and any class without valid WI curves.
+                if cls_id == self.unknown_class_index:
+                    continue
+                has_valid_curves = (
+                    cls_id < len(tp_plus_fp_cs[iou])
+                    and cls_id < len(fp_os[iou])
+                    and tp_plus_fp_cs[iou][cls_id] is not None
+                    and fp_os[iou][cls_id] is not None
+                )
+                if cls_id in range(self.num_seen_classes) and len(rec) > 0 and has_valid_curves:
                     index = min(range(len(rec)), key=lambda i: abs(rec[i] - recall_level))
                     tp_plus_fp = tp_plus_fp_cs[iou][cls_id][index]
                     tp_plus_fps.append(tp_plus_fp)

@@ -151,8 +151,8 @@ def main(args):
 
     num_classes = len(dataset_train.CLASS_NAMES) - 1
     num_prev_classes = args.PREV_INTRODUCED_CLS
-    num_known_classes = args.CUR_INTRODUCED_CLS
-    num_current_classes = num_known_classes - num_prev_classes
+    num_current_classes = args.CUR_INTRODUCED_CLS
+    num_known_classes = num_prev_classes + num_current_classes
 
     print(f"All Classes({num_classes}): {', '.join(dataset_train.CLASS_NAMES[:-1])}")
     print(f"Previous Classes: {num_prev_classes}")
