@@ -1,3 +1,6 @@
+/vis
+/dataset
+/exps
 *.pth
 .vscode
 .idea

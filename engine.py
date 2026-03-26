@@ -11,25 +11,19 @@
 Train and eval functions used in main.py
 """
 import math
-import os
 import sys
 from typing import Iterable
  
 import torch
 import utils.misc as utils
-from datasets.coco_eval import CocoEvaluator
 from datasets.open_world_eval import OWEvaluator
-from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
-from utils.box_ops import box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
-from utils.plot_utils import plot_prediction
-import matplotlib.pyplot as plt
 from copy import deepcopy
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, nc_epoch: int, max_norm: float = 0, wandb: object = None):
+                    device: torch.device, epoch: int, nc_epoch: int, max_norm: float = 0):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -40,7 +34,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
 
-    for _ in metric_logger.log_every(range(len(data_loader)), 200, header):
+    for _ in metric_logger.log_every(range(len(data_loader)), 99999, header):
         outputs = model(samples)
         loss_dict = criterion(outputs, targets) 
         weight_dict = deepcopy(criterion.weight_dict)
@@ -77,11 +71,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         else:
             grad_total_norm = utils.get_total_grad_norm(model.parameters(), max_norm)
         optimizer.step()
-        
-        if wandb is not None:
-            wandb.log({"total_loss":loss_value})
-            wandb.log(loss_dict_reduced_scaled)
-            wandb.log(loss_dict_reduced_unscaled)
  
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
@@ -96,23 +85,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 ## ORIGINAL FUNCTION
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, args):
     model.eval()
     criterion.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
-    iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
+    iou_types = ('bbox',)
     coco_evaluator = OWEvaluator(base_ds, iou_types, args=args)
  
-    panoptic_evaluator = None
-    if 'panoptic' in postprocessors.keys():
-        panoptic_evaluator = PanopticEvaluator(
-            data_loader.dataset.ann_file,
-            data_loader.dataset.ann_folder,
-            output_dir=os.path.join(output_dir, "panoptic_eval"),
-        )
- 
-    for samples, targets in metric_logger.log_every(data_loader, 200, header):
+    for samples, targets in metric_logger.log_every(data_loader, 99999, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         outputs = model(samples)
@@ -120,60 +101,25 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         results = postprocessors['bbox'](outputs, orig_target_sizes)
  
-        if 'segm' in postprocessors.keys():
-            target_sizes = torch.stack([t["size"] for t in targets], dim=0)
-            results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
-        if coco_evaluator is not None:
-            coco_evaluator.update(res)
+        coco_evaluator.update(res)
  
-        if panoptic_evaluator is not None:
-            res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
-            for i, target in enumerate(targets):
-                image_id = target["image_id"].item()
-                file_name = f"{image_id:012d}.png"
-                res_pano[i]["image_id"] = image_id
-                res_pano[i]["file_name"] = file_name
- 
-            panoptic_evaluator.update(res_pano)
- 
-    # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    # print("Averaged stats:", metric_logger)
-    if coco_evaluator is not None:
-        coco_evaluator.synchronize_between_processes()
-    if panoptic_evaluator is not None:
-        panoptic_evaluator.synchronize_between_processes()
- 
-    # accumulate predictions from all images
-    if coco_evaluator is not None:
-        coco_evaluator.accumulate()
-        res = coco_evaluator.summarize()
-    panoptic_res = None
-    if panoptic_evaluator is not None:
-        panoptic_res = panoptic_evaluator.summarize()
-    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-    stats['metrics']=res
-    if coco_evaluator is not None:
-        if 'bbox' in postprocessors.keys():
-            stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
-        if 'segm' in postprocessors.keys():
-            stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
-    if panoptic_res is not None:
-        stats['PQ_all'] = panoptic_res["All"]
-        stats['PQ_th'] = panoptic_res["Things"]
-        stats['PQ_st'] = panoptic_res["Stuff"]
-    return stats, coco_evaluator
+    coco_evaluator.synchronize_between_processes()
+    coco_evaluator.accumulate()
+    res = coco_evaluator.summarize()
+
+    return res
  
     
 @torch.no_grad()
 def get_exemplar_replay(model, exemplar_selection, device, data_loader):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = '[ExempReplay]'
-    print_freq = 10
+    print_freq = 99999
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
-    image_sorted_scores_reduced={}
+    image_sorted_scores_reduced = {}
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         outputs = model(samples)
         image_sorted_scores = exemplar_selection(samples, outputs, targets)

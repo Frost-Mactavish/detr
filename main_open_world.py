@@ -26,19 +26,17 @@ from datasets.coco import make_coco_transforms
 from datasets.torchvision_datasets.open_world import OWDetection
 from engine import evaluate, train_one_epoch, get_exemplar_replay
 from models import build_model
-import wandb
-
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Deformable DETR Detector', add_help=False)
     ################ Deformable DETR ################
-    parser.add_argument('--lr', default=2e-4, type=float)
+    parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--lr_backbone_names', default=["backbone.0"], type=str, nargs='+')
-    parser.add_argument('--lr_backbone', default=2e-5, type=float)
+    parser.add_argument('--lr_backbone', default=1e-5, type=float)
     parser.add_argument('--lr_linear_proj_names', default=['reference_points', 'sampling_offsets'], type=str, nargs='+')
     parser.add_argument('--lr_linear_proj_mult', default=0.1, type=float)
-    parser.add_argument('--batch_size', default=5, type=int)
+    parser.add_argument('--batch_size', default=2, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=51, type=int)
     parser.add_argument('--lr_drop', default=35, type=int)
@@ -129,7 +127,6 @@ def get_args_parser():
     parser.add_argument('--test_set', default='', help='testing txt files')
     parser.add_argument('--num_classes', default=81, type=int)
     parser.add_argument('--nc_epoch', default=0, type=int)
-    parser.add_argument('--dataset', default='OWDETR', help='defines which dataset is used. Built for: {TOWOD, OWDETR, VOC2007}')
     parser.add_argument('--data_root', default='./data/OWOD', type=str)
     parser.add_argument('--unk_conf_w', default=1.0, type=float)
 
@@ -137,29 +134,21 @@ def get_args_parser():
     # model config
     parser.add_argument('--model_type', default='prob', type=str)
     
-    # logging
-    parser.add_argument('--wandb_name', default='', type=str)
-    parser.add_argument('--wandb_project', default='PROB_OWOD', type=str)
-    
     # model hyperparameters
     parser.add_argument('--obj_loss_coef', default=1, type=float)
     parser.add_argument('--obj_temp', default=1, type=float)
     parser.add_argument('--freeze_prob_model', default=False, action='store_true', help='freeze model probabistic estimation')
 
-    
     # Exemplar replay selection
     parser.add_argument('--num_inst_per_class', default=50, type=int, help="number of instances per class")
     parser.add_argument('--exemplar_replay_selection', default=False, action='store_true', help='use learned exemplar selection')
     parser.add_argument('--exemplar_replay_max_length', default=1e10, type=int, help="max number of images that can be saves")
-    parser.add_argument('--exemplar_replay_dir', default='', type=str, help="directory of exemplar replay txt files")
     parser.add_argument('--exemplar_replay_prev_file', default='', type=str, help="path to previous ft file")
     parser.add_argument('--exemplar_replay_cur_file', default='', type=str, help="path to current ft file")
     parser.add_argument('--exemplar_replay_random', default=False, action='store_true', help='make selection random')
     return parser
 
 def main(args):
-    wandb = None
-
     utils.init_distributed_mode(args)
 
     if args.frozen_weights is not None:
@@ -177,10 +166,9 @@ def main(args):
     model.to(device)
 
     model_without_ddp = model
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    dataset_train = OWDetection(args, args.data_root, image_set=args.train_set, transforms=make_coco_transforms(args.train_set), dataset = args.dataset)
-    dataset_val = OWDetection(args, args.data_root, image_set=args.test_set, dataset = args.dataset, transforms=make_coco_transforms(args.test_set))
+    dataset_train = OWDetection(args, args.data_root, image_set=args.train_set, transforms=make_coco_transforms(args.train_set))
+    dataset_val = OWDetection(args, args.data_root, image_set=args.test_set, transforms=make_coco_transforms(args.test_set))
     
     if args.distributed:
         if args.cache_mode:
@@ -239,29 +227,25 @@ def main(args):
         model_without_ddp = model.module
 
     if args.frozen_weights is not None:
-        checkpoint = torch.load(args.frozen_weights, map_location='cpu')
+        checkpoint = torch.load(args.frozen_weights, map_location='cpu', weights_only=False)
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
 
     if args.pretrain:
         print('Initialized from the pre-training model')
-        checkpoint = torch.load(args.pretrain, map_location='cpu')
+        checkpoint = torch.load(args.pretrain, map_location="cpu", weights_only=False)
         state_dict = checkpoint['model']
         msg = model_without_ddp.load_state_dict(state_dict, strict=False)
         print(msg)
         args.start_epoch = checkpoint['epoch'] + 1
-        if args.eval:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
-            return
-        
         
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
@@ -285,16 +269,10 @@ def main(args):
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
             args.start_epoch = checkpoint['epoch'] + 1
-        # check the resumed model
-        if (not args.eval and not args.viz and args.dataset in ['coco', 'voc']):
-            test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args
-            )
-        if args.eval:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
-            if args.output_dir:
-                utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
-            return
+
+    if args.eval:
+        evaluate(model, criterion, postprocessors, data_loader_val, dataset_val, device, args)
+        return
         
     if args.freeze_prob_model:           
         if isinstance(model_without_ddp.prob_obj_head, torch.nn.ModuleList):
@@ -310,56 +288,45 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
-            
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.nc_epoch, args.clip_max_norm, wandb)
+
+        train_one_epoch(
+            model,
+            criterion,
+            data_loader_train,
+            optimizer,
+            device,
+            epoch,
+            args.nc_epoch,
+            args.clip_max_norm,
+        )
             
         lr_scheduler.step()
         if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
-            # extra checkpoint before LR drop and every 5 epochs
-            if (epoch + 1) % args.lr_drop == 0 or (epoch % args.eval_every == 0 or epoch == 0 or epoch == 1 or (args.epochs-epoch)<1):
-                test_stats, coco_evaluator = evaluate(
-                    model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir, args)
-                checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
-                if wandb is not None:
-                    test_stats["metrics"]['epoch']=epoch
-                    wandb.log({str(key): val for key, val in test_stats["metrics"].items()})
-            elif epoch > args.epochs-6:
-                checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
-                
-            else:
-                 test_stats = {}
-                    
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }, checkpoint_path)
-            
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
-        
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-            if args.dataset in ['owod', 'owdetr'] and epoch % args.eval_every == 0 and epoch > 0:
-                # for evaluation logs
-                if coco_evaluator is not None:
-                    (output_dir / 'eval').mkdir(exist_ok=True)
-                    if "bbox" in coco_evaluator.coco_eval:
-                        filenames = ['latest.pth']
-                        if epoch % 50 == 0:
-                            filenames.append(f'{epoch:03}.pth')
-                        for name in filenames:
-                            torch.save(coco_evaluator.coco_eval["bbox"].eval,
-                                    output_dir / "eval" / name)
-                            
+            utils.save_on_master({
+                'model': model_without_ddp.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'lr_scheduler': lr_scheduler.state_dict(),
+                'epoch': epoch,
+                'args': args,
+            }, output_dir / 'checkpoint.pth')
+
+            if epoch > 0 and (epoch % args.eval_every == 0 or epoch == args.epochs - 1):
+                res = evaluate(
+                    model,
+                    criterion,
+                    postprocessors,
+                    data_loader_val,
+                    dataset_val,
+                    device,
+                    args,
+                    )
+                with open(output_dir / "stat.log", "a") as f:
+                    f.write(f"Epoch {epoch}:\n")
+                    if args.PREV_INTRODUCED_CLS > 0:
+                        f.write(f"stats Old: mAP: {res["PK_AP50"]:.1f}, Rec: {res["PK_R50"]:.1f}\n")
+                    f.write(f"stats Now: mAP: {res["CK_AP50"]:.1f}, Rec: {res["CK_R50"]:.1f}\n")
+                    f.write(f"stats All: mAP: {res["K_AP50"]:.1f}, Rec: {res["K_R50"]:.1f}\n")
+                    f.write(f"stats Unk: mAP: {res['U_AP50']:.1f}, Rec: {res['U_R50']:.1f}\n\n")
             
     if args.exemplar_replay_selection:
         image_sorted_scores = get_exemplar_replay(model,exemplar_selection, device, data_loader_train)
@@ -373,8 +340,7 @@ def main(args):
 
 def create_ft_dataset(args, image_sorted_scores):
     print(f'found a total of {len(image_sorted_scores.keys())} images')
-    tmp_dir=args.data_root +'/ImageSets/'+args.dataset+"/"+args.exemplar_replay_dir+"/"
-    #tmp_dir=args.data_root +'/ImageSets/'+args.exemplar_replay_dir+"/"
+    tmp_dir = os.path.join(args.data_root, 'ImageSets')
 
     class_sorted_scores={}
     imgs_per_class={}
@@ -415,7 +381,7 @@ def create_ft_dataset(args, image_sorted_scores):
                         
     print(f'found {len(np.unique(save_imgs))} images in run')
     if len(args.exemplar_replay_prev_file)>0:
-        previous_ft = open(tmp_dir+args.exemplar_replay_prev_file,'r').read().splitlines()
+        previous_ft = open(os.path.join(tmp_dir, args.exemplar_replay_prev_file),'r').read().splitlines()
         save_imgs+=previous_ft
         
     save_imgs=np.unique(save_imgs)
@@ -424,7 +390,7 @@ def create_ft_dataset(args, image_sorted_scores):
         save_imgs=save_imgs[:args.exemplar_replay_max_length]
     
     os.makedirs(tmp_dir, exist_ok=True)
-    with open(tmp_dir+args.exemplar_replay_cur_file, 'w') as f:
+    with open(os.path.join(tmp_dir, args.exemplar_replay_cur_file), 'w') as f:
         for line in save_imgs:
             f.write(line)
             f.write('\n')

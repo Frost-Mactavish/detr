@@ -491,7 +491,7 @@ class SetCriterion(nn.Module):
                 bt['labels'] = torch.zeros_like(bt['labels'])
             indices = self.matcher(enc_outputs, bin_targets)
             for loss in self.losses:
-                if loss == 'masks':
+                if loss in {'masks', 'obj_likelihood'}:
                     # Intermediate masks losses are too costly to compute, we ignore them.
                     continue
                 kwargs = {}

@@ -5,7 +5,6 @@ import torch
 import os
 import tarfile
 import collections
-import logging
 import copy
 from torchvision.datasets import VisionDataset
 import itertools
@@ -13,69 +12,15 @@ import itertools
 import numpy as np
 import xml.etree.ElementTree as ET
 from PIL import Image
-from torchvision.datasets.utils import download_url, check_integrity, verify_str_arg
-
-#OWOD splits
-VOC_CLASS_NAMES_COCOFIED = [
-    "airplane",  "dining table", "motorcycle",
-    "potted plant", "couch", "tv"
-]
-
-BASE_VOC_CLASS_NAMES = [
-    "aeroplane", "diningtable", "motorbike",
-    "pottedplant",  "sofa", "tvmonitor"
-]
-UNK_CLASS = ["unknown"]
-
-VOC_COCO_CLASS_NAMES={}
+from torchvision.datasets.utils import download_url
 
 
 T1_CLASS_NAMES = ["airplane", "ship", "vehicle", "harbor", "storage-tank", "tennis-court"]
 T2_CLASS_NAMES = ["bridge", "baseball-diamond", "basketball-court", "ground-track-field", "swimming-pool", "windmill"]
 T3_CLASS_NAMES = ["overpass", "helicopter", "expressway-service-area", "soccer-ball-field", "roundabout", "airport"]
 T4_CLASS_NAMES = ["chimney", "expressway-toll-station", "stadium", "dam", "golffield", "trainstation"]
-
-VOC_COCO_CLASS_NAMES["OWDETR"] = tuple(itertools.chain(T1_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
-
-
-VOC_CLASS_NAMES = [
-"aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat",
-"chair", "cow", "diningtable", "dog", "horse", "motorbike", "person",
-"pottedplant", "sheep", "sofa", "train", "tvmonitor"
-]
-
-VOC_CLASS_NAMES_COCOFIED = [
-    "airplane",  "dining table", "motorcycle",
-    "potted plant", "couch", "tv"
-]
-
-BASE_VOC_CLASS_NAMES = [
-    "aeroplane", "diningtable", "motorbike",
-    "pottedplant",  "sofa", "tvmonitor"
-]
-
-T2_CLASS_NAMES = [
-    "truck", "traffic light", "fire hydrant", "stop sign", "parking meter",
-    "bench", "elephant", "bear", "zebra", "giraffe",
-    "backpack", "umbrella", "handbag", "tie", "suitcase",
-    "microwave", "oven", "toaster", "sink", "refrigerator"
-]
-
-T3_CLASS_NAMES = [
-    "frisbee", "skis", "snowboard", "sports ball", "kite",
-    "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
-    "banana", "apple", "sandwich", "orange", "broccoli",
-    "carrot", "hot dog", "pizza", "donut", "cake"
-]
-
-T4_CLASS_NAMES = [
-    "bed", "toilet", "laptop", "mouse",
-    "remote", "keyboard", "cell phone", "book", "clock",
-    "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
-    "wine glass", "cup", "fork", "knife", "spoon", "bowl"
-]
-VOC_COCO_CLASS_NAMES["TOWOD"] = tuple(itertools.chain(VOC_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
-VOC_COCO_CLASS_NAMES["VOC2007"] = tuple(itertools.chain(VOC_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
+UNK_CLASS = ["unknown"]
+VOC_COCO_CLASS_NAMES = tuple(itertools.chain(T1_CLASS_NAMES, T2_CLASS_NAMES, T3_CLASS_NAMES, T4_CLASS_NAMES, UNK_CLASS))
 
 
 class OWDetection(VisionDataset):
@@ -102,8 +47,7 @@ class OWDetection(VisionDataset):
                  root,
                  image_set='train',
                  transforms=None,
-                 filter_pct=-1,
-                 dataset='OWDETR'):
+                 filter_pct=-1):
         super(OWDetection, self).__init__(transforms)
         self.images = []
         self.annotations = []
@@ -111,15 +55,15 @@ class OWDetection(VisionDataset):
         self.imgid2annotations = {}
         self.image_set = []
         self.transforms=transforms
-        self.CLASS_NAMES = VOC_COCO_CLASS_NAMES[dataset]
+        self.CLASS_NAMES = VOC_COCO_CLASS_NAMES
         self.args = args
-        self.dataset=dataset
 
         self.root=str(root)
         annotation_dir = os.path.join(self.root, 'Annotations')
         image_dir = os.path.join(self.root, 'JPEGImages')
 
         file_names = self.extract_fns(image_set, self.root)
+
         self.image_set.extend(file_names)
         self.images.extend([self.resolve_image_path(image_dir, x) for x in file_names])
         self.annotations.extend([os.path.join(annotation_dir, x + ".xml") for x in file_names])
@@ -167,8 +111,6 @@ class OWDetection(VisionDataset):
         for obj in target['annotation']['object']:
             cls = obj["name"]
 
-            # if cls in VOC_CLASS_NAMES_COCOFIED:
-            #     cls = BASE_VOC_CLASS_NAMES[VOC_CLASS_NAMES_COCOFIED.index(cls)]
             bbox = obj["bndbox"]
             bbox = [float(bbox[x]) for x in ["xmin", "ymin", "xmax", "ymax"]]
             bbox[0] -= 1.0
@@ -184,7 +126,6 @@ class OWDetection(VisionDataset):
 
     def extract_fns(self, image_set, voc_root):
         splits_dir = os.path.join(voc_root, 'ImageSets')
-        splits_dir = os.path.join(splits_dir, self.dataset)
         split_f = os.path.join(splits_dir, image_set.rstrip('\n') + '.txt')
         with open(os.path.join(split_f), "r") as f:
             file_names = [x.strip() for x in f.readlines()]
@@ -257,7 +198,6 @@ class OWDetection(VisionDataset):
             size=torch.as_tensor([int(h), int(w)]),
             iscrowd=torch.zeros(len(instances), dtype=torch.uint8)
         )
-        #import ipdb;ipdb.set_trace()
 
         if self.transforms[-1] is not None:
             img, target = self.transforms[-1](img, target)
