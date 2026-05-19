@@ -1,0 +1,25 @@
+#!/bin/bash
+
+alias exp="python -u main_open_world.py --dataset owod --num_queries 900 --eval_every 5 --data_root dataset/OWDETR \
+                                        --test_set test --num_classes 25 --unmatched_boxes --top_unk 5 --featdim 1024 \
+                                        --NC_branch --nc_loss_coef 0.1 --nc_epoch 9 --with_box_refine --two_stage \
+                                        --backbone dino_resnet50 --viz"
+
+EXP_DIR=vis/OWDETR_t1
+exp --output_dir ${EXP_DIR} --PREV_INTRODUCED_CLS 0 --CUR_INTRODUCED_CLS 6 \
+    --train_set task1_train --epochs 12 --pretrain exps/5e-5/500/OWDETR_t1/checkpoint.pth
+
+EXP_DIR=vis/OWDETR_t2
+exp --output_dir ${EXP_DIR} --PREV_INTRODUCED_CLS 6 --CUR_INTRODUCED_CLS 6 \
+    --train_set task2_ft --epochs 28 \
+    --pretrain exps/5e-5/500/OWDETR_t2_ft/checkpoint.pth
+
+EXP_DIR=vis/OWDETR_t3
+exp --output_dir ${EXP_DIR} --PREV_INTRODUCED_CLS 12 --CUR_INTRODUCED_CLS 6 \
+    --train_set task3_ft --epochs 44 \
+    --pretrain exps/5e-5/500/OWDETR_t3_ft/checkpoint.pth
+
+EXP_DIR=vis/OWDETR_t4
+exp --output_dir ${EXP_DIR} --PREV_INTRODUCED_CLS 18 --CUR_INTRODUCED_CLS 6 \
+    --train_set task4_ft --epochs 60 \
+    --pretrain exps/5e-5/500/OWDETR_t4_ft/checkpoint.pth

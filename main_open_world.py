@@ -263,7 +263,7 @@ def main(args):
             return
 
     if args.viz:
-        viz(model, criterion, postprocessors, data_loader_val, dataset_val, device, args.output_dir)
+        viz(model, criterion, postprocessors, data_loader_val, device, args.output_dir)
         return
 
     print("Start training")

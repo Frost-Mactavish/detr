@@ -11,8 +11,10 @@ import utils.misc as utils
 from datasets.open_world_eval import OWEvaluator
 from datasets.data_prefetcher import data_prefetcher
 from utils.plot_utils import draw_img, CLASSES
+from utils.box_ops import box_cxcywh_to_xyxy
 from copy import deepcopy
 from PIL import Image
+import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
@@ -77,7 +79,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 ## ORIGINAL FUNCTION
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args, epoch):
     model.eval()
     criterion.eval()
@@ -86,7 +88,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
     coco_evaluator = OWEvaluator(base_ds, iou_types, args=args)
 
-    for samples, targets in metric_logger.log_every(data_loader, 999999, header):
+    for samples, targets in metric_logger.log_every(data_loader, 1000, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         outputs = model(samples)
@@ -108,8 +110,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     return stats, coco_evaluator
 
 
-@torch.no_grad()
-def viz(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+@torch.inference_mode()
+def viz(model, criterion, postprocessors, data_loader, device, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     model.eval()
     criterion.eval()
@@ -117,12 +119,7 @@ def viz(model, criterion, postprocessors, data_loader, base_ds, device, output_d
     class_names = CLASSES
     idx2name = {idx: name for idx, name in enumerate(class_names)}
  
-    cnt = 0
     for samples, targets in tqdm(data_loader, desc="Viz"):
-        if cnt == 1000:
-            break
-        cnt += 1
-        
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
@@ -135,25 +132,55 @@ def viz(model, criterion, postprocessors, data_loader, base_ds, device, output_d
         std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
         for img_tensor, target, pred in zip(samples.tensors, targets, results):
-            top_k = int(target['boxes'].shape[0]) if 'boxes' in target else pred['scores'].shape[0]
-            keep_k = min(top_k, int(pred['scores'].shape[0]))
-            if keep_k == 0:
+            gt_count = int(target['boxes'].shape[0]) if 'boxes' in target else 0
+            pred_count = int(pred['scores'].shape[0])
+            if gt_count == 0 or pred_count == 0:
                 continue
 
-            top_indices = pred['scores'].sort(descending=True)[1][:keep_k]
-            boxes = pred['boxes'][top_indices].detach().cpu().numpy()
-            labels = pred['labels'][top_indices].detach().cpu().numpy().astype(np.int64)
-            scores = pred['scores'][top_indices].detach().cpu().numpy()
-
+            h_img, w_img = img_tensor.shape[1], img_tensor.shape[2]
             img = img_tensor.detach().cpu().permute(1, 2, 0).numpy()
             img = (img * std + mean) * 255.0
             img = np.clip(img, 0, 255).astype(np.uint8)
-            canvas = Image.fromarray(img)
+            base_canvas = Image.fromarray(img)
 
-            draw_img(canvas, boxes, labels, scores, idx2name)
+            gt_canvas = base_canvas.copy()
+            pred_canvas = base_canvas.copy()
+
+            gt_boxes = target['boxes'].detach().cpu()
+            gt_boxes = box_cxcywh_to_xyxy(gt_boxes)
+            gt_boxes = gt_boxes * torch.tensor([w_img, h_img, w_img, h_img], dtype=gt_boxes.dtype)
+            gt_boxes = gt_boxes.numpy()
+            gt_labels = target['labels'].detach().cpu().numpy().astype(np.int64)
+            gt_scores = np.ones(gt_count, dtype=np.float32)
+            draw_img(gt_canvas, gt_boxes, gt_labels, gt_scores, idx2name)
+
+            keep_k = min(gt_count, pred_count) if gt_count > 0 else pred_count
+            top_indices = pred['scores'].sort(descending=True)[1][:keep_k]
+            pred_boxes = pred['boxes'][top_indices].detach().cpu().numpy()
+            pred_labels = pred['labels'][top_indices].detach().cpu().numpy().astype(np.int64)
+            pred_scores = pred['scores'][top_indices].detach().cpu().numpy()
+
+            keep = pred_scores > 0.5
+            pred_boxes = pred_boxes[keep]
+            pred_labels = pred_labels[keep]
+            pred_scores = pred_scores[keep]
+
+            draw_img(pred_canvas, pred_boxes, pred_labels, pred_scores, idx2name)
 
             image_id = target['image_id']
             if torch.is_tensor(image_id):
                 image_id = int(image_id.flatten()[0].item())
             out_path = os.path.join(output_dir, f'img_{int(image_id)}.png')
-            canvas.save(out_path)
+
+            fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+            axes[0].imshow(np.asarray(gt_canvas))
+            axes[0].set_title('GT', fontsize=16)
+            axes[0].axis('off')
+
+            axes[1].imshow(np.asarray(pred_canvas))
+            axes[1].set_title('Prediction', fontsize=16)
+            axes[1].axis('off')
+
+            fig.tight_layout()
+            fig.savefig(out_path, bbox_inches='tight', pad_inches=0.1)
+            plt.close(fig)
