@@ -356,6 +356,10 @@ def create_ft_dataset(args, image_sorted_scores):
     class_threshold={}
     for i in range(args.PREV_INTRODUCED_CLS, args.CUR_INTRODUCED_CLS+args.PREV_INTRODUCED_CLS):
         tmp=np.array(class_sorted_scores[str(i)])
+        if len(tmp) == 0:
+            print(f'found 0 imgs in class {i}, skipping exemplar thresholding for this class')
+            class_threshold[str(i)] = None
+            continue
         tmp.sort()
         tmp = torch.Tensor(tmp)
         if len(tmp)>args.num_inst_per_class and not args.exemplar_replay_random:
@@ -375,6 +379,8 @@ def create_ft_dataset(args, image_sorted_scores):
     for k,v in image_sorted_scores.items():
         for j in range(len(v['labels'])):
             label = str(v['labels'][j])
+            if class_threshold[label] is None:
+                continue
             if (v['scores'][j] <= class_threshold[label][0].numpy() or v['scores'][j] >= class_threshold[label][1].numpy()) and (len(imgs_per_class[label])<=args.num_inst_per_class+2):
                 save_imgs.append(k)
                 imgs_per_class[label].append(k)
