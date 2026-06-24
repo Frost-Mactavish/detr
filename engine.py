@@ -120,7 +120,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     coco_evaluator.accumulate()
     coco_evaluator.summarize()
 
-    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-    stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+    # stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    # stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+    print_info = coco_evaluator.coco_eval['bbox'].print_info
 
-    return stats, coco_evaluator
+    return print_info, coco_evaluator

@@ -282,18 +282,13 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
         if (epoch + 1) > 5:
-            test_stats, coco_evaluator = evaluate(
+            print_info, coco_evaluator = evaluate(
                 model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
             )
 
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
-
             if args.output_dir and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+                    f.write(f"Epoch: {epoch}\n{print_info}\n\n")
 
                 # for evaluation logs
                 if coco_evaluator is not None:
